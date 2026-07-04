@@ -70,6 +70,12 @@
     Cesium.Model.fromGltfAsync({
       url: "citywalk_buildings.glb",
       modelMatrix: modelMatrix,
+      // Cesium's built-in silhouette (an edge-highlight around the model,
+      // not a per-face outline) gives each building's footprint a crisp
+      // dark edge so adjacent buildings and the ground plane read as
+      // distinct shapes, on top of the warm-gray fill baked into the GLB.
+      silhouetteColor: Cesium.Color.fromCssColorString("#3a3630"),
+      silhouetteSize: 1.5,
     }).then((model) => {
       viewer.scene.primitives.add(model);
       model.readyEvent.addEventListener(() => {
@@ -87,45 +93,88 @@
 
     // --- Live vehicles via WebSocket -----------------------------------
     const hud = document.getElementById("hud");
-    const vehicleEntities = new Map(); // vehicle id -> Cesium.Entity
+    const vehicleEntities = new Map(); // vehicle id -> { state, body, cabin }
+
+    // True, real-world car dimensions (meters), split into a lower body and
+    // a narrower/shorter cabin sitting on top -- reads as an actual car
+    // silhouette from above instead of one flat slab. z values are the
+    // center height of each box above ground.
+    const CAR_BODY_DIMS = [4.2, 1.9, 1.1];
+    const CAR_BODY_Z = 0.55;
+    const CAR_CABIN_DIMS = [2.3, 1.5, 0.7];
+    const CAR_CABIN_Z = 1.45;
+
+    // A car rendered at true scale is realistically tiny on screen once
+    // you're zoomed out to see the whole neighborhood -- readable, but easy
+    // to lose track of. Rather than picking one fixed size, scale each car
+    // up a bit at a distance for visibility and let it settle down to its
+    // real, 1:1 proportions as you zoom in close (matching the minimum
+    // zoom clamp above), instead of staying an oversized block up close.
+    const CAR_SCALE_NEAR = 80, CAR_SCALE_NEAR_VALUE = 1.0;
+    const CAR_SCALE_FAR = 500, CAR_SCALE_FAR_VALUE = 2.2;
+
+    function carScaleAt(lon, lat) {
+      const carPos = Cesium.Cartesian3.fromDegrees(lon, lat, 0);
+      const dist = Cesium.Cartesian3.distance(viewer.camera.positionWC, carPos);
+      const t = Cesium.Math.clamp(
+        (dist - CAR_SCALE_NEAR) / (CAR_SCALE_FAR - CAR_SCALE_NEAR), 0.0, 1.0
+      );
+      return CAR_SCALE_NEAR_VALUE + t * (CAR_SCALE_FAR_VALUE - CAR_SCALE_NEAR_VALUE);
+    }
+
+    function makeCarPart(state, trueDims, trueZ) {
+      return {
+        position: new Cesium.CallbackProperty(() => {
+          const s = carScaleAt(state.lon, state.lat);
+          return Cesium.Cartesian3.fromDegrees(state.lon, state.lat, trueZ * s);
+        }, false),
+        orientation: new Cesium.CallbackProperty(() => {
+          const s = carScaleAt(state.lon, state.lat);
+          const pos = Cesium.Cartesian3.fromDegrees(state.lon, state.lat, trueZ * s);
+          return Cesium.Transforms.headingPitchRollQuaternion(
+            pos, new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(state.heading), 0, 0)
+          );
+        }, false),
+        box: {
+          dimensions: new Cesium.CallbackProperty(() => {
+            const s = carScaleAt(state.lon, state.lat);
+            return new Cesium.Cartesian3(trueDims[0] * s, trueDims[1] * s, trueDims[2] * s);
+          }, false),
+          material: Cesium.Color.fromCssColorString("#ffb300"),
+          outline: true,
+          outlineColor: Cesium.Color.BLACK,
+        },
+      };
+    }
 
     function upsertVehicle(v) {
-      const pos = Cesium.Cartesian3.fromDegrees(v.lon, v.lat, 1.5);
-      const heading = Cesium.Math.toRadians(v.angle); // SUMO: 0=N clockwise, matches Cesium heading
-      const hpr = new Cesium.HeadingPitchRoll(heading, 0, 0);
-      const orientation = Cesium.Transforms.headingPitchRollQuaternion(pos, hpr);
-
-      let entity = vehicleEntities.get(v.id);
-      if (!entity) {
-        entity = viewer.entities.add({
-          position: pos,
-          orientation: orientation,
-          box: {
-            dimensions: new Cesium.Cartesian3(4.2, 1.9, 1.6),
-            material: Cesium.Color.fromCssColorString("#ffb300"),
-            outline: true,
-            outlineColor: Cesium.Color.BLACK,
-          },
-        });
-        vehicleEntities.set(v.id, entity);
+      let entry = vehicleEntities.get(v.id);
+      if (!entry) {
+        const state = { lon: v.lon, lat: v.lat, heading: v.angle };
+        const body = viewer.entities.add(makeCarPart(state, CAR_BODY_DIMS, CAR_BODY_Z));
+        const cabin = viewer.entities.add(makeCarPart(state, CAR_CABIN_DIMS, CAR_CABIN_Z));
+        vehicleEntities.set(v.id, { state, body, cabin });
       } else {
-        entity.position = pos;
-        entity.orientation = orientation;
+        entry.state.lon = v.lon;
+        entry.state.lat = v.lat;
+        entry.state.heading = v.angle;
       }
     }
 
     function removeStale(currentIds) {
-      for (const [id, entity] of vehicleEntities) {
+      for (const [id, entry] of vehicleEntities) {
         if (!currentIds.has(id)) {
-          viewer.entities.remove(entity);
+          viewer.entities.remove(entry.body);
+          viewer.entities.remove(entry.cabin);
           vehicleEntities.delete(id);
         }
       }
     }
 
     function clearAllVehicles() {
-      for (const entity of vehicleEntities.values()) {
-        viewer.entities.remove(entity);
+      for (const entry of vehicleEntities.values()) {
+        viewer.entities.remove(entry.body);
+        viewer.entities.remove(entry.cabin);
       }
       vehicleEntities.clear();
     }

@@ -145,12 +145,21 @@ meshes = []
 skipped = edge_dropped
 merged_shells = len(shells_to_drop)
 
+# Plain-white extrusions read as flat, undifferentiated blocks once the
+# default OSM raster basemap is right there for contrast -- a soft warm
+# gray (the same tone most 3D-city viewers use, e.g. Cesium OSM Buildings)
+# reads as "building material" instead of "untextured placeholder".
+BUILDING_COLOR = [214, 209, 196, 255]  # RGBA
+
 for i, c in enumerate(in_bbox):
     if i in shells_to_drop:
         continue
     try:
         height = c["height"] if c["height"] is not None else DEFAULT_HEIGHT
         mesh = trimesh.creation.extrude_polygon(c["poly"], height=height)
+        # vertex_colors (not face_colors) -- avoids needing scipy for the
+        # face->vertex conversion trimesh's GLB exporter otherwise triggers.
+        mesh.visual.vertex_colors = np.tile(BUILDING_COLOR, (len(mesh.vertices), 1))
         meshes.append(mesh)
     except Exception:
         skipped += 1
