@@ -150,7 +150,16 @@ merged_shells = len(shells_to_drop)
 # gray (the same tone most 3D-city viewers use, e.g. Cesium OSM Buildings)
 # reads as "building material" instead of "untextured placeholder".
 BUILDING_COLOR = [214, 209, 196, 255]  # RGBA
+OUTLINE_COLOR = [15, 15, 15, 255]      # near-black
+OUTLINE_WIDTH = 0.35                    # meters, ring thickness
+OUTLINE_HEIGHT = 0.3                    # meters, ring thickness (straddles the roofline)
 
+# Cesium's Model silhouetteColor/silhouetteSize (a post-process edge
+# highlight) turned out not to render for this GLB in testing -- rather
+# than depend on that, bake a real thin dark ring of geometry tracing each
+# building's roofline directly into the mesh. This always renders, at any
+# zoom or angle, since it's just more triangles with a dark color, not an
+# effect that depends on scene/context support.
 for i, c in enumerate(in_bbox):
     if i in shells_to_drop:
         continue
@@ -161,6 +170,20 @@ for i, c in enumerate(in_bbox):
         # face->vertex conversion trimesh's GLB exporter otherwise triggers.
         mesh.visual.vertex_colors = np.tile(BUILDING_COLOR, (len(mesh.vertices), 1))
         meshes.append(mesh)
+
+        ring_poly = c["poly"].buffer(0).difference(c["poly"].buffer(-OUTLINE_WIDTH))
+        ring_geoms = list(ring_poly.geoms) if ring_poly.geom_type == "MultiPolygon" else [ring_poly]
+        for ring in ring_geoms:
+            if ring.is_empty or ring.area < 1e-6:
+                continue
+            outline_mesh = trimesh.creation.extrude_polygon(
+                ring, height=OUTLINE_HEIGHT
+            )
+            outline_mesh.apply_translation([0, 0, height - OUTLINE_HEIGHT / 2])
+            outline_mesh.visual.vertex_colors = np.tile(
+                OUTLINE_COLOR, (len(outline_mesh.vertices), 1)
+            )
+            meshes.append(outline_mesh)
     except Exception:
         skipped += 1
         continue

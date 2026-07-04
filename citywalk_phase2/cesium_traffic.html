@@ -70,12 +70,10 @@
     Cesium.Model.fromGltfAsync({
       url: "citywalk_buildings.glb",
       modelMatrix: modelMatrix,
-      // Cesium's built-in silhouette (an edge-highlight around the model,
-      // not a per-face outline) gives each building's footprint a crisp
-      // dark edge so adjacent buildings and the ground plane read as
-      // distinct shapes, on top of the warm-gray fill baked into the GLB.
-      silhouetteColor: Cesium.Color.fromCssColorString("#3a3630"),
-      silhouetteSize: 1.5,
+      // (Building outlines are baked directly into the GLB as real dark
+      // roofline geometry -- Cesium's Model silhouetteColor/silhouetteSize
+      // post-process didn't actually render for this model, so we don't
+      // rely on it here.)
     }).then((model) => {
       viewer.scene.primitives.add(model);
       model.readyEvent.addEventListener(() => {
