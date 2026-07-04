@@ -27,10 +27,25 @@ origin_lon = (min_lon + max_lon) / 2
 R_EARTH = 6378137.0  # WGS84 equatorial radius, meters
 
 def latlon_to_local_xy(lat, lon):
-    """Equirectangular approx -- fine for a ~1km-scale area."""
-    x = math.radians(lon - origin_lon) * R_EARTH * math.cos(math.radians(origin_lat))
-    y = math.radians(lat - origin_lat) * R_EARTH
-    return x, y
+    """Equirectangular approx -- fine for a ~1km-scale area.
+
+    NOTE: returns (north, -east), not the "natural" (east, north). Determined
+    empirically with isolated single-box test files loaded the same way as
+    the real model: a box authored at local (x=100, y=0, z=up) rendered in
+    Cesium at (east=0, north=+100); a box authored at (x=0, y=100, z=up)
+    rendered at (east=-100, north=0). That means, end to end through our
+    Z-up->Y-up export rotation plus however Cesium's model loader handles a
+    glTF's Y-up convention, the effective mapping is world_east=-input_y,
+    world_north=input_x -- a proper (non-reflecting) 90-degree rotation, not
+    a plain axis swap. Solving for the input that makes world_east/north
+    match true east/north gives (input_x, input_y) = (north, -east), which
+    is what's returned here. Verified by picking real building footprints
+    across the whole map after this change (see diagnosis notes for way
+    495448021's corner, previously unpickable at its true position).
+    """
+    east = math.radians(lon - origin_lon) * R_EARTH * math.cos(math.radians(origin_lat))
+    north = math.radians(lat - origin_lat) * R_EARTH
+    return north, -east
 
 # index all nodes
 nodes = {}
@@ -82,9 +97,9 @@ for way in root.findall("way"):
         continue
 
     cx, cy = poly_local.centroid.x, poly_local.centroid.y
-    # centroid back to lat/lon for the bbox check (equirectangular inverse)
-    centroid_lat = origin_lat + math.degrees(cy / R_EARTH)
-    centroid_lon = origin_lon + math.degrees(cx / (R_EARTH * math.cos(math.radians(origin_lat))))
+    # local coords are (north, -east) -- see latlon_to_local_xy. Invert accordingly.
+    centroid_lat = origin_lat + math.degrees(cx / R_EARTH)
+    centroid_lon = origin_lon + math.degrees(-cy / (R_EARTH * math.cos(math.radians(origin_lat))))
 
     candidates.append({
         "tags": tags,
@@ -152,6 +167,12 @@ scene = trimesh.Scene(meshes)
 # anchor it to in Cesium). glTF/GLB requires Y-up, and trimesh does not convert
 # this automatically -- without it, Cesium ends up rendering buildings on their
 # side. Rotate -90 deg about X: (x, y, z) -> (x, z, -y).
+#
+# This is a proper rotation (determinant +1), not a reflection, so it doesn't
+# disturb face winding/normals -- the east/north correction is handled earlier
+# in latlon_to_local_xy instead (a relabeling of which local axis is which,
+# not a mirroring of exported geometry), keeping this export step exactly the
+# already-verified fix for the vertical (buildings-on-their-side) bug.
 Z_UP_TO_Y_UP = np.array([
     [1,  0, 0, 0],
     [0,  0, 1, 0],
