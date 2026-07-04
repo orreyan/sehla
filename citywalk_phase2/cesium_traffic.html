@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>City Walk Digital Twin — Phase 2</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+    #hud {
+      position: absolute; top: 10px; left: 10px; z-index: 10;
+      background: rgba(0,0,0,0.6); color: #fff; font-family: monospace;
+      padding: 8px 12px; border-radius: 4px; font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+  <div id="hud">connecting...</div>
+  <script>
+    // UrlTemplateImageryProvider is the most stable way to pull plain OSM raster
+    // tiles across Cesium versions -- shows real streets/road labels, no API key.
+    // NOTE: Cesium 1.120 silently ignores the old `imageryProvider` constructor
+    // option (it was deprecated and no-ops now) -- `baseLayer` with an explicit
+    // ImageryLayer is the option that actually attaches it.
+    const osmProvider = new Cesium.UrlTemplateImageryProvider({
+      url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      subdomains: ["a", "b", "c"],
+      credit: "© OpenStreetMap contributors",
+      maximumLevel: 19,
+    });
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      baseLayer: new Cesium.ImageryLayer(osmProvider),
+      terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+      baseLayerPicker: false,
+      geocoder: false,
+      sceneModePicker: false,
+      navigationHelpButton: false,
+      homeButton: false,
+      animation: false,
+      timeline: false,
+      fullscreenButton: false,
+    });
+    window.__viewer = viewer; // debug hook
+
+    // Comfortable navigation for a small, fixed area: Cesium's default drag
+    // gesture orbits the camera around a 3D pivot point on the globe, which
+    // feels erratic/disorienting at neighborhood scale (small mouse moves
+    // swing the view wildly). Remap it to behave like a flat map instead --
+    // drag to pan, scroll to zoom, and a modifier-drag to tilt/look around.
+    const controller = viewer.scene.screenSpaceCameraController;
+    controller.minimumZoomDistance = 25;
+    controller.maximumZoomDistance = 3000;
+    controller.translateEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
+    controller.rotateEventTypes = []; // disable default globe-orbit drag
+    controller.tiltEventTypes = [
+      Cesium.CameraEventType.MIDDLE_DRAG,
+      Cesium.CameraEventType.RIGHT_DRAG,
+      { eventType: Cesium.CameraEventType.LEFT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL },
+    ];
+    controller.zoomEventTypes = [Cesium.CameraEventType.WHEEL, Cesium.CameraEventType.PINCH];
+
+    // Origin used when building the static mesh (center of the City Walk OSM extract).
+    const originLon = 55.263000000000005;
+    const originLat = 25.2075;
+
+    const position = Cesium.Cartesian3.fromDegrees(originLon, originLat, 0);
+    const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(position);
+
+    Cesium.Model.fromGltfAsync({
+      url: "citywalk_buildings.glb",
+      modelMatrix: modelMatrix,
+    }).then((model) => {
+      viewer.scene.primitives.add(model);
+      model.readyEvent.addEventListener(() => {
+        // NOTE: we tried viewer.trackedEntity here to lock the orbit point on
+        // the neighborhood center, but it crashes Cesium 1.120's whole render
+        // loop once live vehicle entities start churning at 5Hz (postRender
+        // bounding-sphere computation throws). Dropped it -- flyToBoundingSphere
+        // plus the zoom clamp above is enough for comfortable navigation without
+        // the crash risk.
+        viewer.camera.flyToBoundingSphere(model.boundingSphere, {
+          offset: new Cesium.HeadingPitchRange(0, -0.6, model.boundingSphere.radius * 2.5),
+        });
+      });
+    }).catch((err) => console.error("Building mesh failed to load:", err));
+
+    // --- Live vehicles via WebSocket -----------------------------------
+    const hud = document.getElementById("hud");
+    const vehicleEntities = new Map(); // vehicle id -> Cesium.Entity
+
+    function upsertVehicle(v) {
+      const pos = Cesium.Cartesian3.fromDegrees(v.lon, v.lat, 1.5);
+      const heading = Cesium.Math.toRadians(v.angle); // SUMO: 0=N clockwise, matches Cesium heading
+      const hpr = new Cesium.HeadingPitchRoll(heading, 0, 0);
+      const orientation = Cesium.Transforms.headingPitchRollQuaternion(pos, hpr);
+
+      let entity = vehicleEntities.get(v.id);
+      if (!entity) {
+        entity = viewer.entities.add({
+          position: pos,
+          orientation: orientation,
+          box: {
+            dimensions: new Cesium.Cartesian3(4.2, 1.9, 1.6),
+            material: Cesium.Color.fromCssColorString("#ffb300"),
+            outline: true,
+            outlineColor: Cesium.Color.BLACK,
+          },
+        });
+        vehicleEntities.set(v.id, entity);
+      } else {
+        entity.position = pos;
+        entity.orientation = orientation;
+      }
+    }
+
+    function removeStale(currentIds) {
+      for (const [id, entity] of vehicleEntities) {
+        if (!currentIds.has(id)) {
+          viewer.entities.remove(entity);
+          vehicleEntities.delete(id);
+        }
+      }
+    }
+
+    function clearAllVehicles() {
+      for (const entity of vehicleEntities.values()) {
+        viewer.entities.remove(entity);
+      }
+      vehicleEntities.clear();
+    }
+
+    // --- Traffic lights --------------------------------------------------
+    const tlsColors = {
+      green: Cesium.Color.LIMEGREEN,
+      yellow: Cesium.Color.GOLD,
+      red: Cesium.Color.RED,
+    };
+    const tlsEntities = new Map(); // tls id -> Cesium.Entity
+
+    function upsertTrafficLight(t) {
+      const pos = Cesium.Cartesian3.fromDegrees(t.lon, t.lat, 4.0); // signal-head height
+      const color = tlsColors[t.color] || Cesium.Color.GRAY;
+
+      let entity = tlsEntities.get(t.id);
+      if (!entity) {
+        entity = viewer.entities.add({
+          position: pos,
+          point: {
+            pixelSize: 14,
+            color: color,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY, // stay visible through buildings
+            // Adjacent lanes are only ~3m apart in reality, so at typical
+            // zoomed-out distances their fixed-size dots visually merge into
+            // a blob. Scale down + fade out when far away (decluttered
+            // overview), scale up + fully opaque up close (individual lanes
+            // become distinguishable as you zoom in on an intersection).
+            scaleByDistance: new Cesium.NearFarScalar(30, 1.6, 800, 0.5),
+            translucencyByDistance: new Cesium.NearFarScalar(30, 1.0, 800, 0.35),
+          },
+        });
+        tlsEntities.set(t.id, entity);
+      } else {
+        entity.point.color = color;
+      }
+    }
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+      ws.onopen = () => { hud.textContent = "connected — waiting for data..."; };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "reset") {
+          clearAllVehicles();
+          return;
+        }
+        if (msg.type === "tick") {
+          const currentIds = new Set(msg.vehicles.map(v => v.id));
+          msg.vehicles.forEach(upsertVehicle);
+          removeStale(currentIds);
+          (msg.trafficLights || []).forEach(upsertTrafficLight);
+          hud.textContent = `sim time: ${msg.simTime.toFixed(1)}s | vehicles: ${msg.vehicleCount} | signals: ${(msg.trafficLights || []).length}`;
+        }
+      };
+
+      ws.onclose = () => {
+        hud.textContent = "disconnected — retrying in 2s...";
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = () => ws.close();
+    }
+
+    connect();
+  </script>
+</body>
+</html>

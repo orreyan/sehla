@@ -1,0 +1,6 @@
+.DS_Store
+citywalk_3d_test/
+citywalk_test_results/
+*.log
+__pycache__/
+*.pyc
