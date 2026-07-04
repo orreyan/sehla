@@ -151,15 +151,19 @@ merged_shells = len(shells_to_drop)
 # reads as "building material" instead of "untextured placeholder".
 BUILDING_COLOR = [214, 209, 196, 255]  # RGBA
 OUTLINE_COLOR = [15, 15, 15, 255]      # near-black
-OUTLINE_WIDTH = 0.35                    # meters, ring thickness
+OUTLINE_WIDTH = 0.35                    # meters, roofline ring thickness
 OUTLINE_HEIGHT = 0.3                    # meters, ring thickness (straddles the roofline)
+CORNER_WIDTH = 0.35                     # meters, vertical corner-column width
+CORNER_SIMPLIFY_TOL = 0.5                # meters -- collapse near-duplicate corners
+                                          # (curved/many-point OSM footprints would
+                                          # otherwise get a column every ~0.1m)
 
 # Cesium's Model silhouetteColor/silhouetteSize (a post-process edge
 # highlight) turned out not to render for this GLB in testing -- rather
-# than depend on that, bake a real thin dark ring of geometry tracing each
-# building's roofline directly into the mesh. This always renders, at any
-# zoom or angle, since it's just more triangles with a dark color, not an
-# effect that depends on scene/context support.
+# than depend on that, bake real dark geometry tracing each building's
+# outline directly into the mesh: a thin ring around the roofline, plus a
+# thin vertical column at each corner (ground to roof). Together these read
+# as a full outline from any angle, not just from directly above.
 for i, c in enumerate(in_bbox):
     if i in shells_to_drop:
         continue
@@ -184,6 +188,16 @@ for i, c in enumerate(in_bbox):
                 OUTLINE_COLOR, (len(outline_mesh.vertices), 1)
             )
             meshes.append(outline_mesh)
+
+        simplified = c["poly"].simplify(CORNER_SIMPLIFY_TOL, preserve_topology=True)
+        corner_coords = list(simplified.exterior.coords)[:-1]  # drop closing dup
+        for vx, vy in corner_coords:
+            column = trimesh.creation.box(extents=[CORNER_WIDTH, CORNER_WIDTH, height])
+            column.apply_translation([vx, vy, height / 2])
+            column.visual.vertex_colors = np.tile(
+                OUTLINE_COLOR, (len(column.vertices), 1)
+            )
+            meshes.append(column)
     except Exception:
         skipped += 1
         continue
