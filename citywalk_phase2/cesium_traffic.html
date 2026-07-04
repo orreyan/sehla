@@ -114,9 +114,17 @@
     // a narrower/shorter cabin sitting on top -- reads as an actual car
     // silhouette from above instead of one flat slab. z values are the
     // center height of each box above ground.
-    const CAR_BODY_DIMS = [4.2, 1.9, 1.1];
+    //
+    // Dimensions are [x, y, z] in Cesium's local East-North-Up frame at
+    // heading 0 (before headingPitchRollQuaternion rotates it): x = East-
+    // West extent, y = North-South extent, z = height. Heading 0 means
+    // "facing North", i.e. the car's long (forward-facing) axis needs to be
+    // on y, not x -- it was on x before, which pointed the car's length
+    // East-West at heading 0 instead of along its direction of travel, so
+    // every car looked broadside-on to the road ("driving sideways").
+    const CAR_BODY_DIMS = [1.9, 4.2, 1.1];
     const CAR_BODY_Z = 0.55;
-    const CAR_CABIN_DIMS = [2.3, 1.5, 0.7];
+    const CAR_CABIN_DIMS = [1.5, 2.3, 0.7];
     const CAR_CABIN_Z = 1.45;
 
     // A car rendered at true scale is realistically tiny on screen once
