@@ -43,6 +43,17 @@
     });
     window.__viewer = viewer; // debug hook
 
+    // Softer, flatter lighting: the default sun light casts one hard,
+    // high-contrast directional shadow per face, which reads as stark and
+    // graphic. Lowering its intensity a bit and raising each model's ambient
+    // fill (imageBasedLighting below) brings up the shadowed sides instead
+    // of leaving them near-black -- closer to the softly-lit "clay render"
+    // look of stylized city viz, without touching geometry.
+    viewer.scene.light = new Cesium.DirectionalLight({
+      direction: new Cesium.Cartesian3(0.35, 0.25, -0.9),
+      intensity: 1.4,
+    });
+
     // Comfortable navigation for a small, fixed area: Cesium's default drag
     // gesture orbits the camera around a 3D pivot point on the globe, which
     // feels erratic/disorienting at neighborhood scale (small mouse moves
@@ -74,6 +85,12 @@
       // roofline geometry -- Cesium's Model silhouetteColor/silhouetteSize
       // post-process didn't actually render for this model, so we don't
       // rely on it here.)
+      // Raised ambient fill light (paired with the dimmer sun above) so
+      // shadowed building faces stay a visible mid-tone instead of going
+      // near-black -- the flatter, evenly-lit part of the toy-city look.
+      imageBasedLighting: new Cesium.ImageBasedLighting({
+        luminanceAtZenith: 0.9,
+      }),
     }).then((model) => {
       viewer.scene.primitives.add(model);
       model.readyEvent.addEventListener(() => {

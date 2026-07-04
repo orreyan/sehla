@@ -145,12 +145,22 @@ meshes = []
 skipped = edge_dropped
 merged_shells = len(shells_to_drop)
 
-# Plain-white extrusions read as flat, undifferentiated blocks once the
-# default OSM raster basemap is right there for contrast -- a soft warm
-# gray (the same tone most 3D-city viewers use, e.g. Cesium OSM Buildings)
-# reads as "building material" instead of "untextured placeholder".
-BUILDING_COLOR = [214, 209, 196, 255]  # RGBA
-OUTLINE_COLOR = [15, 15, 15, 255]      # near-black
+# A single flat gray reads as "untextured placeholder" -- a small rotating
+# palette of soft, muted pastel tones (picked deterministically per building
+# so re-running the script gives the same result) reads more like a
+# stylized/illustrative city, closer to the toy-city reference look, while
+# staying a one-line change in the extrusion loop below.
+PASTEL_PALETTE = [
+    [232, 213, 196, 255],  # warm sand
+    [206, 223, 214, 255],  # sage mint
+    [219, 205, 226, 255],  # dusty lilac
+    [227, 198, 192, 255],  # soft terracotta
+    [201, 214, 227, 255],  # powder blue
+    [236, 224, 197, 255],  # pale butter
+]
+# Softer, warm charcoal instead of pure near-black -- pure black outlines read
+# as harsh/graphic; a dark warm gray reads more like a soft ink line.
+OUTLINE_COLOR = [58, 51, 46, 255]
 OUTLINE_WIDTH = 0.35                    # meters, roofline ring thickness
 OUTLINE_HEIGHT = 0.3                    # meters, ring thickness (straddles the roofline)
 CORNER_WIDTH = 0.35                     # meters, vertical corner-column width
@@ -172,7 +182,8 @@ for i, c in enumerate(in_bbox):
         mesh = trimesh.creation.extrude_polygon(c["poly"], height=height)
         # vertex_colors (not face_colors) -- avoids needing scipy for the
         # face->vertex conversion trimesh's GLB exporter otherwise triggers.
-        mesh.visual.vertex_colors = np.tile(BUILDING_COLOR, (len(mesh.vertices), 1))
+        building_color = PASTEL_PALETTE[i % len(PASTEL_PALETTE)]
+        mesh.visual.vertex_colors = np.tile(building_color, (len(mesh.vertices), 1))
         meshes.append(mesh)
 
         ring_poly = c["poly"].buffer(0).difference(c["poly"].buffer(-OUTLINE_WIDTH))
